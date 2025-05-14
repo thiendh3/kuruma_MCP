@@ -113,19 +113,15 @@ export const CreatePullRequestReviewSchema = z.object({
   body: z.string().describe("The body text of the review"),
   event: z.enum(['APPROVE', 'REQUEST_CHANGES', 'COMMENT']).describe("The review action to perform"),
   comments: z.array(
-    z.union([
-      z.object({
-        path: z.string().describe("The relative path to the file being commented on"),
-        position: z.number().describe("The position in the diff where you want to add a review comment"),
-        body: z.string().describe("Text of the review comment")
-      }),
-      z.object({
-        path: z.string().describe("The relative path to the file being commented on"),
-        line: z.number().describe("The line number in the file where you want to add a review comment"),
-        body: z.string().describe("Text of the review comment")
-      })
-    ])
-  ).optional().describe("Comments to post as part of the review (specify either position or line, not both)")
+    z.object({
+      path: z.string().describe("The relative path to the file being commented on"),
+      start_line: z.number().describe("The starting line number in the file to comment on"),
+      end_line: z.number().optional().describe("The ending line number in the file to comment on (defaults to start_line if not provided)"),
+      start_side: z.enum(['LEFT', 'RIGHT']).optional().describe("Which version of the file to comment on for the start line (LEFT for old version, RIGHT for new version)"),
+      end_side: z.enum(['LEFT', 'RIGHT']).optional().describe("Which version of the file to comment on for the end line (LEFT for old version, RIGHT for new version)"),
+      body: z.string().describe("Text of the review comment")
+    })
+  ).optional().describe("Comments to post as part of the review")
 });
 
 export const MergePullRequestSchema = z.object({
@@ -221,11 +217,39 @@ export async function createPullRequestReview(
   pullNumber: number,
   options: Omit<z.infer<typeof CreatePullRequestReviewSchema>, 'owner' | 'repo' | 'pull_number'>
 ): Promise<z.infer<typeof PullRequestReviewSchema>> {
+  // Transform comments to GitHub API format
+  const transformedOptions = {
+    ...options,
+    comments: options.comments?.map((comment: {
+      path: string;
+      start_line: number;
+      end_line?: number;
+      start_side?: 'LEFT' | 'RIGHT';
+      end_side?: 'LEFT' | 'RIGHT';
+      body: string;
+    }) => {
+      const endLine = comment.end_line || comment.start_line;
+      const startSide = comment.start_side || 'RIGHT';
+      const endSide = comment.end_side || startSide;
+      
+      return {
+        path: comment.path,
+        line: comment.start_line,
+        side: startSide.toLowerCase(),
+        start_line: comment.start_line,
+        start_side: startSide.toLowerCase(),
+        line_end: endLine,
+        side_end: endSide.toLowerCase(),
+        body: comment.body
+      };
+    })
+  };
+
   const response = await githubRequest(
     `https://api.github.com/repos/${owner}/${repo}/pulls/${pullNumber}/reviews`,
     {
       method: 'POST',
-      body: options,
+      body: transformedOptions,
     }
   );
   return PullRequestReviewSchema.parse(response);
